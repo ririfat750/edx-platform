@@ -826,6 +826,15 @@ class MixedModuleStore(ModuleStoreDraftAndPublished, ModuleStoreWriteBase):
         store = self._verify_modulestore_support(location.course_key, 'revert_to_published')
         return store.revert_to_published(location, user_id)
 
+    def reset_to_version(self, course_key, version_guid):
+        """
+        Reverts a the content of a course at `course_key` to a version specified by `version_id`.
+
+        :raises NotImplementedError: if not supported by store.
+        """
+        store = self._verify_modulestore_support(course_key, 'reset_to_version')
+        return store.reset_to_version(course_key=course_key, version_guid=version_guid)
+
     def close_all_connections(self):
         """
         Close all db connections
