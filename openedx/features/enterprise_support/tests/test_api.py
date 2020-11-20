@@ -15,12 +15,14 @@ from django.test.utils import override_settings
 from django.urls import reverse
 from edx_django_utils.cache import get_cache_key
 from six.moves.urllib.parse import parse_qs
+from slumber.exceptions import HttpClientError
 
 from openedx.core.djangoapps.site_configuration.tests.factories import SiteFactory
 from openedx.core.djangolib.testing.utils import CacheIsolationTestCase, skip_unless_lms
 from openedx.features.enterprise_support.api import (
     _CACHE_MISS,
     ENTERPRISE_CUSTOMER_KEY_NAME,
+    EnterpriseApiException,
     add_enterprise_customer_to_session,
     ConsentApiClient,
     ConsentApiServiceClient,
@@ -104,6 +106,7 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         mocked_jwt_builder.assert_called_once_with(dummy_enterprise_user)
         # pylint: disable=protected-access
         self.assertEqual(enterprise_api_service_client.client._store['session'].auth.token, 'test-token')
+        return enterprise_api_service_client
 
     def _assert_get_enterprise_customer(self, api_client, enterprise_api_data_for_mock):
         """
@@ -159,6 +162,54 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         """
         self._assert_api_client_with_user(EnterpriseApiClient, mock_jwt_builder)
 
+    @httpretty.activate
+    @mock.patch('openedx.features.enterprise_support.api.create_jwt_for_user')
+    def test_enterprise_api_client_with_user_post_enrollment(self, mock_jwt_builder):
+        """
+        Verify that enterprise API client uses the provided user to
+        authenticate and access enterprise API.
+        """
+        api_client = self._assert_api_client_with_user(EnterpriseApiClient, mock_jwt_builder)
+        setattr(api_client.client, 'enterprise-course-enrollment', mock.Mock())
+
+        username = 'spongebob'
+        course_id = 'burger-flipping-101'
+        consent_granted = True
+
+        api_client.post_enterprise_course_enrollment(username, course_id, consent_granted)
+
+        mock_endpoint = getattr(api_client.client, 'enterprise-course-enrollment')
+        mock_endpoint.post.assert_called_once_with(data={
+            'username': username,
+            'course_id': course_id,
+            'consent_granted': consent_granted,
+        })
+
+    @httpretty.activate
+    @mock.patch('openedx.features.enterprise_support.api.create_jwt_for_user')
+    def test_enterprise_api_client_with_user_post_enrollment_http_error(self, mock_jwt_builder):
+        """
+        Verify that enterprise API client uses the provided user to
+        authenticate and access enterprise API.
+        """
+        api_client = self._assert_api_client_with_user(EnterpriseApiClient, mock_jwt_builder)
+        setattr(api_client.client, 'enterprise-course-enrollment', mock.Mock())
+        mock_endpoint = getattr(api_client.client, 'enterprise-course-enrollment')
+        mock_endpoint.post.side_effect = HttpClientError
+
+        username = 'spongebob'
+        course_id = 'burger-flipping-101'
+        consent_granted = True
+
+        with self.assertRaises(EnterpriseApiException):
+            api_client.post_enterprise_course_enrollment(username, course_id, consent_granted)
+
+        mock_endpoint.post.assert_called_once_with(data={
+            'username': username,
+            'course_id': course_id,
+            'consent_granted': consent_granted,
+        })
+
     @mock.patch('openedx.features.enterprise_support.api.enterprise_customer_uuid_for_request')
     @mock.patch('openedx.features.enterprise_support.api.EnterpriseApiClient')
     def test_enterprise_customer_from_api_cache_miss(self, mock_client_class, mock_uuid_from_request):
@@ -185,7 +236,18 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         Verify that enterprise API consent service client uses the provided
         user to authenticate and access enterprise API.
         """
-        self._assert_api_client_with_user(ConsentApiClient, mock_jwt_builder)
+        consent_client = self._assert_api_client_with_user(ConsentApiClient, mock_jwt_builder)
+        consent_client.consent_endpoint = mock.Mock()
+
+        kwargs = {
+            'foo': 'a',
+            'bar': 'b',
+        }
+        consent_client.provide_consent(**kwargs)
+        consent_client.revoke_consent(**kwargs)
+
+        consent_client.consent_endpoint.post.assert_called_once_with(kwargs)
+        consent_client.consent_endpoint.delete.assert_called_once_with(**kwargs)
 
     @httpretty.activate
     @mock.patch('openedx.features.enterprise_support.api.get_enterprise_learner_data_from_db')
@@ -220,6 +282,11 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         # test after consent permission is granted
         self.mock_consent_get(user.username, course_id, ec_uuid)
         self.assertFalse(consent_needed_for_course(request, user, course_id))
+
+        # test when the enrollment already exists without a consent record existing.
+        clear_data_consent_share_cache(user.id, course_id)
+        self.mock_consent_missing(user.username, course_id, ec_uuid)
+        self.assertFalse(consent_needed_for_course(request, user, course_id, enrollment_exists=True))
 
     @httpretty.activate
     @mock.patch('enterprise.models.EnterpriseCustomer.catalog_contains_course')

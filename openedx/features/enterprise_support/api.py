@@ -37,7 +37,7 @@ try:
     )
     from enterprise.api.v1.serializers import EnterpriseCustomerUserReadOnlySerializer
     from consent.models import DataSharingConsent, DataSharingConsentTextOverrides
-except ImportError:
+except ImportError:  # pragma: no cover
     pass
 
 
