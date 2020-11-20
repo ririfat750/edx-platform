@@ -34,13 +34,15 @@ from openedx.features.enterprise_support.api import (
     enterprise_customer_from_api,
     enterprise_customer_uuid_for_request,
     enterprise_enabled,
+    get_consent_notification_data,
     get_consent_required_courses,
     get_dashboard_consent_notification,
     get_enterprise_consent_url,
     get_enterprise_learner_data_from_api,
     get_enterprise_learner_data_from_db,
     get_enterprise_learner_portal_enabled_message,
-    insert_enterprise_pipeline_elements
+    insert_enterprise_pipeline_elements,
+    unlink_enterprise_user_from_idp,
 )
 from openedx.features.enterprise_support.tests import FEATURES_WITH_ENTERPRISE_ENABLED
 from openedx.features.enterprise_support.tests.factories import (
@@ -50,6 +52,8 @@ from openedx.features.enterprise_support.tests.factories import (
 from openedx.features.enterprise_support.tests.mixins.enterprise import EnterpriseServiceMockMixin
 from openedx.features.enterprise_support.utils import clear_data_consent_share_cache
 from common.djangoapps.student.tests.factories import UserFactory
+
+from enterprise.models import EnterpriseCustomerUser
 
 
 class MockEnrollment(mock.MagicMock):
@@ -835,9 +839,12 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         self.assertIsNone(actual_result)
         self.assertFalse(mock_learner_data_from_db.called)
 
+    @ddt.data(True, False)
     @mock.patch('openedx.features.enterprise_support.api.get_enterprise_learner_data_from_db')
     @override_settings(ENTERPRISE_LEARNER_PORTAL_BASE_URL='http://localhost')
-    def test_enterprise_learner_portal_message_cache_hit_customer_exists(self, mock_learner_data_from_db):
+    def test_enterprise_learner_portal_message_cache_hit_customer_exists(
+            self, enable_learner_portal, mock_learner_data_from_db
+    ):
         """
         When customer data exists in the request session and it's a non-empty customer,
         then ``get_enterprise_learner_portal_enabled_message()`` should return
@@ -846,7 +853,7 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         mock_enterprise_customer = {
             'uuid': 'some-uuid',
             'name': 'Best Corp',
-            'enable_learner_portal': True,
+            'enable_learner_portal': enable_learner_portal,
             'slug': 'best-corp',
         }
         mock_request = mock.Mock(session={
@@ -854,9 +861,12 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         })
 
         actual_result = get_enterprise_learner_portal_enabled_message(mock_request)
-        self.assertIn('custom dashboard for learning', actual_result)
-        self.assertIn('Best Corp', actual_result)
-        self.assertFalse(mock_learner_data_from_db.called)
+        if not enable_learner_portal:
+            self.assertIsNone(actual_result)
+        else:
+            self.assertIn('custom dashboard for learning', actual_result)
+            self.assertIn('Best Corp', actual_result)
+            self.assertFalse(mock_learner_data_from_db.called)
 
     @mock.patch('openedx.features.enterprise_support.api.get_partial_pipeline', return_value=None)
     def test_customer_uuid_for_request_sso_provider_id_customer_exists(self, mock_partial_pipeline):
@@ -1004,3 +1014,73 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         add_enterprise_customer_to_session(mock_request, None)
         # verify that existing session value should not be updated for un-authenticate user
         self.assertEqual(mock_request.session[ENTERPRISE_CUSTOMER_KEY_NAME], enterprise_customer)
+
+    def test_get_consent_notification_data_no_overrides(self):
+        enterprise_customer = {
+            'name': 'abc',
+            'uuid': 'cf246b88-d5f6-4908-a522-fc307e0b0c59'
+        }
+
+        title_template, message_template = get_consent_notification_data(enterprise_customer)
+
+        self.assertIsNone(title_template)
+        self.assertIsNone(message_template)
+
+    @mock.patch('openedx.features.enterprise_support.api.DataSharingConsentTextOverrides')
+    def test_get_consent_notification_data(self, mock_override_model):
+        enterprise_customer = {
+            'name': 'abc',
+            'uuid': 'cf246b88-d5f6-4908-a522-fc307e0b0c59'
+        }
+        mock_override = mock.Mock(
+            declined_notification_title = 'the title',
+            declined_notification_message = 'the message',
+        )
+        mock_override_model.objects.get.return_value = mock_override
+
+        title_template, message_template = get_consent_notification_data(enterprise_customer)
+
+        assert mock_override.declined_notification_title == title_template
+        assert mock_override.declined_notification_message == message_template
+
+    @mock.patch('openedx.features.enterprise_support.api.Registry')
+    @mock.patch('openedx.features.enterprise_support.api.enterprise_customer_for_request')
+    def test_unlink_enterprise_user_from_idp(self, mock_customer_from_request, mock_registry):
+        customer_idp = EnterpriseCustomerIdentityProviderFactory.create(
+            provider_id='the-provider',
+        )
+        customer = customer_idp.enterprise_customer
+        customer_user = EnterpriseCustomerUserFactory.create(
+            enterprise_customer=customer,
+            user_id=self.user.id,
+        )
+        mock_customer_from_request.return_value = {
+            'uuid': customer.uuid,
+        }
+        mock_registry.get_enabled_by_backend_name.return_value = [
+            mock.Mock(provider_id='the-provider')
+        ]
+        request = mock.Mock()
+
+        unlink_enterprise_user_from_idp(request, self.user, idp_backend_name='the-backend-name')
+
+        assert 0 == EnterpriseCustomerUser.objects.filter(user_id=self.user.id).count()
+
+    @mock.patch('openedx.features.enterprise_support.api.Registry')
+    @mock.patch('openedx.features.enterprise_support.api.enterprise_customer_for_request')
+    def test_unlink_enterprise_user_from_idp_no_customer_user(self, mock_customer_from_request, mock_registry):
+        customer_idp = EnterpriseCustomerIdentityProviderFactory.create(
+            provider_id='the-provider',
+        )
+        customer = customer_idp.enterprise_customer
+        mock_customer_from_request.return_value = {
+            'uuid': customer.uuid,
+        }
+        mock_registry.get_enabled_by_backend_name.return_value = [
+            mock.Mock(provider_id='the-provider')
+        ]
+        request = mock.Mock()
+
+        unlink_enterprise_user_from_idp(request, self.user, idp_backend_name='the-backend-name')
+
+        assert 0 == EnterpriseCustomerUser.objects.filter(user_id=self.user.id).count()

@@ -594,7 +594,7 @@ def consent_needed_for_course(request, user, course_id, enrollment_exists=False)
             enterprises = [str(learner['enterprise_customer']['uuid']) for learner in enterprise_learner_details]
 
             if str(current_enterprise_uuid) not in enterprises:
-                LOGGER.info(
+                LOGGER.info(  # pragma: no cover
                     '[ENTERPRISE DSC] Consent requirement failed due to enterprise mismatch. '
                     'USER: [%s], CurrentEnterprise: [%s], LearnerEnterprises: [%s]',
                     user.username,
@@ -604,7 +604,7 @@ def consent_needed_for_course(request, user, course_id, enrollment_exists=False)
             else:
                 domains = [learner['enterprise_customer']['site']['domain'] for learner in enterprise_learner_details]
                 if not Site.objects.filter(domain__in=domains).filter(id=request.site.id).exists():
-                    LOGGER.info(
+                    LOGGER.info(  # pragma: no cover
                         '[ENTERPRISE DSC] Consent requirement failed due to site mismatch. '
                         'USER: [%s], RequestSite: [%s], LearnerEnterpriseDomains: [%s]',
                         user.username,
