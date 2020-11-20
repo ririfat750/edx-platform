@@ -37,6 +37,8 @@ from openedx.features.enterprise_support.api import (
     get_consent_required_courses,
     get_dashboard_consent_notification,
     get_enterprise_consent_url,
+    get_enterprise_learner_data_from_api,
+    get_enterprise_learner_data_from_db,
     get_enterprise_learner_portal_enabled_message,
     insert_enterprise_pipeline_elements
 )
@@ -381,6 +383,28 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
 
         mock_endpoint.return_value.get.assert_called_once_with(username=user.username)
 
+    @mock.patch('openedx.features.enterprise_support.api.EnterpriseApiClient')
+    def test_get_enterprise_learner_data_from_api(self, mock_api_client_class):
+        user = mock.Mock(is_authenticated=True)
+        mock_client = mock_api_client_class.return_value
+        mock_client.fetch_enterprise_learner_data.return_value = {
+            'results': 'the-learner-data',
+        }
+
+        learner_data = get_enterprise_learner_data_from_api(user)
+
+        assert 'the-learner-data' == learner_data
+        mock_api_client_class.assert_called_once_with(user=user)
+        mock_client.fetch_enterprise_learner_data.assert_called_once_with(user)
+
+    def test_get_enterprise_learner_data_from_db_no_data(self):
+        assert [] == get_enterprise_learner_data_from_db(self.user)
+
+    def test_get_enterprise_learner_data_from_db(self):
+        enterprise_customer_user = EnterpriseCustomerUserFactory(user_id=self.user.id)
+        user_data = get_enterprise_learner_data_from_db(self.user)[0]['user']
+        assert user_data['username'] == self.user.username
+
     @httpretty.activate
     @mock.patch('openedx.features.enterprise_support.api.get_enterprise_learner_data_from_db')
     @mock.patch('openedx.features.enterprise_support.api.EnterpriseCustomer')
@@ -602,12 +626,14 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
 
         mock_get_consent_url.assert_called_once()
 
+    @ddt.data(True, False)
     @httpretty.activate
     @mock.patch('openedx.features.enterprise_support.api.enterprise_customer_uuid_for_request')
     @mock.patch('openedx.features.enterprise_support.api.reverse')
     @mock.patch('openedx.features.enterprise_support.api.consent_needed_for_course')
     def test_get_enterprise_consent_url(
             self,
+            is_return_to_null,
             needed_for_course_mock,
             reverse_mock,
             enterprise_customer_uuid_for_request_mock,
@@ -626,17 +652,19 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         needed_for_course_mock.return_value = True
         request_mock = mock.MagicMock(
             user=self.user,
+            path='/request_path',
             build_absolute_uri=lambda x: 'http://localhost:8000' + x  # Don't do it like this in prod. Ever.
         )
 
         course_id = 'course-v1:edX+DemoX+Demo_Course'
-        return_to = 'info'
+        return_to = None if is_return_to_null else 'info'
 
+        expected_path = request_mock.path if is_return_to_null else '/courses/course-v1:edX+DemoX+Demo_Course/info'
         expected_url_args = {
             'course_id': ['course-v1:edX+DemoX+Demo_Course'],
             'failure_url': ['http://localhost:8000/dashboard?consent_failed=course-v1%3AedX%2BDemoX%2BDemo_Course'],
             'enterprise_customer_uuid': ['cf246b88-d5f6-4908-a522-fc307e0b0c59'],
-            'next': ['http://localhost:8000/courses/course-v1:edX+DemoX+Demo_Course/info']
+            'next': ['http://localhost:8000{}'.format(expected_path)]
         }
 
         actual_url = get_enterprise_consent_url(request_mock, course_id, return_to=return_to)
