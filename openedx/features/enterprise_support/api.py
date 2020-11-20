@@ -586,6 +586,11 @@ def consent_needed_for_course(request, user, course_id, enrollment_exists=False)
         )
 
         if not consent_needed:
+            # TODO: this whole code branch seems to do nothing other than log some misleading info:
+            # the consent requirement doesn't actually fail.  If there's an enterprise or site mismatch,
+            # we'll still end up in the else branch of "if consent_needed:" below, where
+            # we'll log that consent is not needed, and ultimately, return False.
+            # Are we supposed to raise some exceptions in here?
             enterprises = [str(learner['enterprise_customer']['uuid']) for learner in enterprise_learner_details]
 
             if str(current_enterprise_uuid) not in enterprises:

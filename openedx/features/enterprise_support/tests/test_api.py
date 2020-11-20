@@ -289,6 +289,26 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         self.assertFalse(consent_needed_for_course(request, user, course_id, enrollment_exists=True))
 
     @httpretty.activate
+    @mock.patch('openedx.features.enterprise_support.api.get_enterprise_learner_data_from_db')
+    def test_consent_needed_for_course_no_learner_data(self, mock_get_enterprise_learner_data):
+        user = UserFactory(username='janedoe')
+        request = mock.MagicMock(
+            user=user,
+            site=SiteFactory(domain="example.com"),
+            session={},
+            COOKIES={},
+            GET={},
+        )
+        ec_uuid = 'cf246b88-d5f6-4908-a522-fc307e0b0c59'
+        course_id = 'fake-course'
+        mock_get_enterprise_learner_data.return_value = None
+        self.mock_enterprise_learner_api()
+
+        # test not required consent for example non enterprise customer
+        self.mock_consent_not_required(user.username, course_id, ec_uuid)
+        self.assertFalse(consent_needed_for_course(request, user, course_id))
+
+    @httpretty.activate
     @mock.patch('enterprise.models.EnterpriseCustomer.catalog_contains_course')
     def test_get_consent_required_courses(self, mock_catalog_contains_course):
         mock_catalog_contains_course.return_value = True
@@ -311,6 +331,55 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
         data_sharing_consent.save()
         consent_required = get_consent_required_courses(user, [course_id])
         self.assertNotIn(course_id, consent_required)
+
+    def test_get_consent_required_courses_no_enterprise_user(self):
+        user = UserFactory()
+        course_id = 'fake-course'
+
+        consent_required_courses = get_consent_required_courses(user, [course_id])
+
+        assert set() == consent_required_courses
+
+
+    @mock.patch('openedx.features.enterprise_support.api.create_jwt_for_user')
+    def test_fetch_enterprise_learner_data_unauthenticated(self, mock_jwt_builder):
+        api_client = self._assert_api_client_with_user(EnterpriseApiClient, mock_jwt_builder)
+        setattr(api_client.client, 'enterprise-learner', mock.Mock())
+        mock_endpoint = getattr(api_client.client, 'enterprise-learner')
+
+        user = mock.Mock(is_authenticated=False)
+        self.assertIsNone(api_client.fetch_enterprise_learner_data(user))
+
+        self.assertFalse(mock_endpoint.called)
+
+    @mock.patch('openedx.features.enterprise_support.api.create_jwt_for_user')
+    def test_fetch_enterprise_learner_data(self, mock_jwt_builder):
+        api_client = self._assert_api_client_with_user(EnterpriseApiClient, mock_jwt_builder)
+        setattr(api_client.client, 'enterprise-learner', mock.Mock())
+        mock_endpoint = getattr(api_client.client, 'enterprise-learner')
+
+        user = mock.Mock(is_authenticated=True, username='spongebob')
+        response = api_client.fetch_enterprise_learner_data(user)
+
+        assert mock_endpoint.return_value.get.return_value == response
+        mock_endpoint.return_value.get.assert_called_once_with(username=user.username)
+
+    @mock.patch('openedx.features.enterprise_support.api.get_current_request')
+    @mock.patch('openedx.features.enterprise_support.api.create_jwt_for_user')
+    def test_fetch_enterprise_learner_data_http_error(self, mock_jwt_builder, mock_get_current_request):
+        api_client = self._assert_api_client_with_user(EnterpriseApiClient, mock_jwt_builder)
+        setattr(api_client.client, 'enterprise-learner', mock.Mock())
+        mock_endpoint = getattr(api_client.client, 'enterprise-learner')
+        mock_endpoint.return_value.get.side_effect = HttpClientError
+        mock_get_current_request.return_value.META = {
+            'PATH_INFO': 'whatever',
+        }
+
+        user = mock.Mock(is_authenticated=True, username='spongebob')
+
+        self.assertIsNone(api_client.fetch_enterprise_learner_data(user))
+
+        mock_endpoint.return_value.get.assert_called_once_with(username=user.username)
 
     @httpretty.activate
     @mock.patch('openedx.features.enterprise_support.api.get_enterprise_learner_data_from_db')
