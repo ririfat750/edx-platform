@@ -164,7 +164,7 @@ class ExperimentWaffleFlag(CourseWaffleFlag):
 
         if not hasattr(request, 'user') or not request.user.id:
             # We need username for stable bucketing and id for tracking, so just skip anonymous (not-logged-in) users
-            return 0
+            return 1
 
         user = get_specific_masquerading_user(request.user, course_key)
         if user is None:
