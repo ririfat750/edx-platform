@@ -346,7 +346,6 @@ class TestEnterpriseApi(EnterpriseServiceMockMixin, CacheIsolationTestCase):
 
         assert set() == consent_required_courses
 
-
     @mock.patch('openedx.features.enterprise_support.api.create_jwt_for_user')
     def test_fetch_enterprise_learner_data_unauthenticated(self, mock_jwt_builder):
         api_client = self._assert_api_client_with_user(EnterpriseApiClient, mock_jwt_builder)
